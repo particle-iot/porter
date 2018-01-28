@@ -1,0 +1,28 @@
+{
+  "name": "porter",
+  "version": "0.1.0",
+  "main": "lib/porter.js",
+  "private": true,
+  "license": "Apache-2.0",
+  "contributors": [
+    "Sergey Polyakov <sergeuz@gmail.com>"
+  ],
+  "scripts": {
+    "prepublish": "npm run compile",
+    "compile": "babel src -s -d lib"
+  },
+  "dependencies": {
+    "chalk": "^2.3.0",
+    "es6-promisify": "^5.0.0",
+    "lodash": "^4.17.4",
+    "semver": "^5.5.0",
+    "shelljs": "^0.8.1",
+    "simple-git": "^1.89.0",
+    "tmp": "0.0.33",
+    "yargs": "^11.0.0"
+  },
+  "devDependencies": {
+    "babel-cli": "^6.26.0",
+    "babel-preset-env": "^1.6.1"
+  }
+}
