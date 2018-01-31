@@ -1,17 +1,55 @@
 import { Command } from './command';
-import { readTextFile, updateTextFile, searchLastLine, matchLastLine, replaceLastLine, replaceLine, insertAfterLastLine,
-    makeTempDir, backupCopy, restoreBackup } from '../file-util';
+import { github, rateLimited, ORG_NAME, FIRMWARE_REPO } from '../github';
 import { git, firmwarePath } from '../git';
-
-import { dump } from '../misc'; // FIXME
+import { readTextFile, writeTextFile, readFileLines, updateFileLines, searchLastLine, matchLastLine, replaceLastLine,
+    replaceLine, insertAfterLastLine, makeTempDir, backupCopy, restoreBackup } from '../file-util';
 
 import semver from 'semver';
 
 import path from 'path';
 
+const CHANGELOG_FILE = 'CHANGELOG.md';
+
+// Recognized issue labels
+const LABELS = [
+  {
+    name: 'feature', // Label name
+    section: 'FEATURES' // Changelog section
+  },
+  {
+    name: 'enhancement',
+    section: 'ENHANCEMENTS'
+  },
+  {
+    name: 'bug',
+    section: 'BUGFIXES'
+  },
+  {
+    name: 'internal',
+    section: 'INTERNAL'
+  }
+];
+
+async function checkLabels() {
+  for (let { name } of LABELS) {
+    try {
+      await github.issues.getLabel({
+        owner: ORG_NAME,
+        repo: FIRMWARE_REPO,
+        name: name
+      });
+    } catch (err) {
+      if (err.code == 404) {
+        throw new Error(`Unknown issue label: '${name}'`);
+      }
+      throw err;
+    }
+  }
+}
+
 async function getFirmwareVersion(rootPath) {
   const file = `${rootPath}/build/version.mk`;
-  const lines = await readTextFile(file);
+  const lines = await readFileLines(file);
   const match = matchLastLine(lines, /^\s*VERSION_STRING\s*=\s*(\S+)\s*$/)
   if (!match) {
     throw new Error(`Unable to determine firmware version`);
@@ -51,7 +89,14 @@ export class ReleaseCommand extends Command {
           type: 'string'
         });
       }, argv => this.init(argv));
-      yargs.command(['show', '*'], 'Show release info', yargs => {
+      yargs.command('changelog', 'Generate changelog', yargs => {
+        yargs.option('token', {
+          alias: 't',
+          describe: 'GitHub authentication token',
+          type: 'string'
+        });
+      },argv => this.changelog(argv));
+      yargs.command('show', 'Show release info', yargs => {
         yargs.command(['version', '*'], 'Show current firmware version', yargs => {}, argv => this.showVersion(argv));
       });
     });
@@ -160,11 +205,109 @@ export class ReleaseCommand extends Command {
     this.log.trace(`Updating file: ${file}`);
     file = path.join(rootPath, file);
     await backupCopy(file, backupDir, rootPath);
-    await updateTextFile(file, lines => {
+    await updateFileLines(file, lines => {
       if (!update(lines)) {
         throw new Error('Unexpected file format');
       }
     });
+  }
+
+  async changelog(argv) {
+    if (argv.token) {
+      github.authenticate({
+        type: 'oauth',
+        token: argv.token
+      });
+    }
+    // Get current firmware version
+    const rootPath = await firmwarePath();
+    const curVer = await getFirmwareVersion(rootPath);
+    this.log.info(`Current version: ${curVer}`);
+    // Get previous version
+    const tagInfo = await git.tags();
+    const vers = [];
+    for (let tag of tagInfo.all) {
+      if (tag.startsWith('v')) {
+        const ver = tag.substr(1);
+        if (semver.valid(ver) && semver.compare(ver, curVer) < 0) {
+          vers.push(ver);
+        }
+      }
+    }
+    if (vers.length == 0) {
+      throw new Error('Unable to determine previous firmware version');
+    }
+    vers.sort(semver.compare);
+    const prevVer = vers[vers.length - 1];
+    this.log.info(`Previous version: ${prevVer}`);
+    // Find a common ancestor
+    const curCommit = (await git.revparse(['HEAD'])).trim();
+    const prevCommit = (await git.revparse([`v${prevVer}`])).trim();
+    const baseCommit = (await git.raw(['merge-base', prevCommit, curCommit])).trim();
+    // Collect all merged PRs
+    this.log.info('Getting list of merged PRs');
+    const logInfo = await git.log({ from: baseCommit, to: curCommit, '--merges': true });
+    const prs = [];
+    const regexp = /^Merge pull request #(\d+) from (.*)$/;
+    for (let log of logInfo.all) {
+      const match = log.message.match(regexp);
+      if (!match) {
+        continue;
+      }
+      prs.push(match[1]);
+    }
+    // Ensure that the recognized labels are still registered
+    await checkLabels();
+    // Get list of merged PRs and arrange them by labels
+    let prsByLabel = {};
+    for (let label of LABELS) {
+      prsByLabel[label.name] = [];
+    }
+    let prCount = 0;
+    for (let prNum of prs) {
+      const pr = await github.issues.get({
+        owner: ORG_NAME,
+        repo: FIRMWARE_REPO,
+        number: prNum
+      });
+      let labelCount = 0;
+      if (pr.data.labels) {
+        for (let { name } of pr.data.labels) {
+          const prs = prsByLabel[name];
+          if (prs) {
+            prs.push(pr);
+            ++labelCount;
+            ++prCount;
+          }
+        }
+      }
+      if (labelCount == 0) {
+        this.log.warn(`PR has no recognized labels assigned: ${pr.data.html_url}`);
+      }
+    }
+    if (prCount == 0) {
+      this.log.info('No labeled PRs found');
+      return;
+    }
+    // Generate changelog
+    this.log.info('Generating changelog');
+    let data = `## ${curVer}\n\n`;
+    for (let label of LABELS) {
+      const prs = prsByLabel[label.name];
+      if (prs.length == 0) {
+        continue;
+      }
+      data += `### ${label.section}\n\n`;
+      for (let pr of prs) {
+        data += `- ${pr.data.title} [#${pr.data.number}](${pr.data.html_url})\n`;
+      }
+      data += '\n';
+    }
+    this.log.trace(`Updating file: ${CHANGELOG_FILE}`);
+    const file = `${rootPath}/${CHANGELOG_FILE}`;
+    const srcData = await readTextFile(file);
+    await writeTextFile(file, data + srcData);
+    this.log.info('Use `git diff` to review the changes');
   }
 
   async showVersion(argv) {

@@ -12,6 +12,7 @@
     "compile": "babel src -s -d lib"
   },
   "dependencies": {
+    "@octokit/rest": "^14.0.8",
     "chalk": "^2.3.0",
     "es6-promisify": "^5.0.0",
     "lodash": "^4.17.4",

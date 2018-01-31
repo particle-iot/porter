@@ -14,24 +14,26 @@ export class ConsoleLogger {
   }
 
   trace(msg) {
-    this._log(LogLevel.TRACE, chalk.dim(msg));
+    if (this.level <= LogLevel.TRACE) {
+      console.log(chalk.dim(msg));
+    }
   }
 
   info(msg) {
-    this._log(LogLevel.INFO, msg);
+    if (this.level <= LogLevel.INFO) {
+      console.log(msg);
+    }
   }
 
   warn(msg) {
-    this._log(LogLevel.WARN, `${chalk.yellow('Warning:')} ${msg}`);
+    if (this.level <= LogLevel.WARN) {
+      console.error(`${chalk.yellow('Warning:')} ${msg}`);
+    }
   }
 
   error(msg) {
-    this._log(LogLevel.ERROR, `${chalk.red('Error:')} ${msg}`);
-  }
-
-  _log(level, msg) {
-    if (level >= this.level) {
-      console.log(msg);
+    if (this.level <= LogLevel.ERROR) {
+      console.error(`${chalk.red('Error:')} ${msg}`);
     }
   }
 }

@@ -12,22 +12,30 @@ const writeFileAsync = promisify(fs.writeFile);
 let rootTempDir = null;
 
 export async function readTextFile(file) {
-  const data = await readFileAsync(file, 'utf8');
-  return data.split(/\r?\n/);
+  return await readFileAsync(file, 'utf8');
 }
 
-export async function writeTextFile(file, lines) {
-  const data = lines.join('\n');
+export async function writeTextFile(file, data) {
   await writeFileAsync(file, data, 'utf8');
 }
 
-export async function updateTextFile(file, update) {
-  const lines = await readTextFile(file);
+export async function readFileLines(file) {
+  const data = await readTextFile(file);
+  return data.split(/\r?\n/);
+}
+
+export async function writeFileLines(file, lines) {
+  const data = lines.join('\n');
+  await writeTextFile(file, data);
+}
+
+export async function updateFileLines(file, update) {
+  const lines = await readFileLines(file);
   let result = update(lines);
   if (!result) {
     result = lines;
   }
-  await writeTextFile(file, result);
+  await writeFileLines(file, result);
 }
 
 export function searchLastLine(lines, regexp) {
