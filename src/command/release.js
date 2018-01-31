@@ -4,10 +4,12 @@ import { git, firmwarePath } from '../git';
 import { readTextFile, writeTextFile, readFileLines, updateFileLines, searchLastLine, matchLastLine, replaceLastLine,
     replaceLine, insertAfterLastLine, makeTempDir, backupCopy, restoreBackup } from '../file-util';
 
+import * as shell from 'shelljs';
 import semver from 'semver';
 
 import path from 'path';
 
+const BOOTLOADER_GEN_SCRIPT = 'hal/src/stm32f2xx/image_bootloader.sh';
 const CHANGELOG_FILE = 'CHANGELOG.md';
 
 // Recognized issue labels
@@ -89,13 +91,17 @@ export class ReleaseCommand extends Command {
           type: 'string'
         });
       }, argv => this.init(argv));
-      yargs.command('changelog', 'Generate changelog', yargs => {
-        yargs.option('token', {
-          alias: 't',
-          describe: 'GitHub authentication token',
-          type: 'string'
-        });
-      },argv => this.changelog(argv));
+      yargs.command('generate', 'File generation', yargs => {
+        yargs.command('bootloader', 'Generate bootloader images', yargs => {},
+            argv => this.generateBootloader(argv));
+        yargs.command('changelog', 'Generate changelog', yargs => {
+          yargs.option('token', {
+            alias: 't',
+            describe: 'GitHub authentication token',
+            type: 'string'
+          });
+        }, argv => this.generateChangelog(argv));
+      });
       yargs.command('show', 'Show release info', yargs => {
         yargs.command(['version', '*'], 'Show current firmware version', yargs => {}, argv => this.showVersion(argv));
       });
@@ -212,7 +218,21 @@ export class ReleaseCommand extends Command {
     });
   }
 
-  async changelog(argv) {
+  async generateBootloader(argv) {
+    const rootPath = await firmwarePath();
+    this.log.info('Generating bootloader images');
+    this.log.trace(`Running script: ${BOOTLOADER_GEN_SCRIPT}`);
+    const script = path.join(rootPath, BOOTLOADER_GEN_SCRIPT);
+    const scriptDir = path.dirname(script);
+    shell.cd(scriptDir);
+    const result = shell.exec(script, { shell: '/bin/bash', silent: true });
+    if (result.code != 0) {
+      throw new Error(`${BOOTLOADER_GEN_SCRIPT} has finished with exit code ${result.code}`);
+    }
+    this.log.info('Use `git diff` to review the changes');
+  }
+
+  async generateChangelog(argv) {
     if (argv.token) {
       github.authenticate({
         type: 'oauth',
@@ -286,7 +306,7 @@ export class ReleaseCommand extends Command {
       }
     }
     if (prCount == 0) {
-      this.log.info('No labeled PRs found');
+      this.log.info('No PRs with recognized labels found');
       return;
     }
     // Generate changelog
