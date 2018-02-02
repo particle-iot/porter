@@ -276,15 +276,17 @@ export class ReleaseCommand extends Command {
     await checkLabels();
     // Collect all merged PRs
     this.log.info('Collecting merged PRs');
-    const mergedPrs = [];
+    this.log.trace('Processing closed PRs');
+    let mergedPrs = [];
     let closedPrs = await github.pullRequests.getAll({
       owner: ORG_NAME,
       repo: FIRMWARE_REPO,
       state: 'closed',
       sort: 'updated',
       direction: 'desc',
-      per_page: 50
+      per_page: 100
     });
+    const indirectPrs = {};
     for (;;) {
       let stop = false;
       for (const pr of closedPrs.data) {
@@ -296,19 +298,23 @@ export class ReleaseCommand extends Command {
           stop = true;
           break;
         }
-        if (pr.merged_at && commits.has(pr.merge_commit_sha)) {
-          // Get labels assigned to the PR
-          const labels = await github.issues.getIssueLabels({
-            owner: ORG_NAME,
-            repo: FIRMWARE_REPO,
-            number: pr.number
-          });
-          mergedPrs.push({
-            url: pr.html_url,
-            number: pr.number,
-            title: pr.title,
-            labels: labels.data.map(label => label.name)
-          });
+        if (!pr.merged_at) {
+          continue;
+        }
+        const mergedPr = {
+          url: pr.html_url,
+          number: pr.number,
+          title: pr.title
+        };
+        if (commits.has(pr.merge_commit_sha)) {
+          mergedPrs.push(mergedPr);
+        } else {
+          let prs = indirectPrs[pr.base.label];
+          if (!prs) {
+            prs = [];
+            indirectPrs[pr.base.label] = prs;
+          }
+          prs.push(mergedPr);
         }
       }
       if (stop || !github.hasNextPage(closedPrs)) {
@@ -316,7 +322,39 @@ export class ReleaseCommand extends Command {
       }
       closedPrs = await github.getNextPage(closedPrs);
     }
-    // Arrange PRs by label name
+    // Process indirectly merged PRs
+    this.log.trace('Checking for indirectly merged PRs');
+    const processIndirectPrs = async (head, prs) => {
+      const closedPrs = await github.pullRequests.getAll({
+        owner: ORG_NAME,
+        repo: FIRMWARE_REPO,
+        state: 'closed',
+        head: head
+      });
+      for (let pr of closedPrs.data) {
+        if (pr.merged_at) {
+          if (commits.has(pr.merge_commit_sha)) {
+            mergedPrs = Array.concat(mergedPrs, prs);
+          } else {
+            await processIndirectPrs(pr.base.label, prs);
+          }
+        }
+      }
+    };
+    for (let base in indirectPrs) {
+      await processIndirectPrs(base, indirectPrs[base]);
+    }
+    // Get labels assigned to the PRs
+    this.log.trace('Getting labels assigned to PRs');
+    for (let pr of mergedPrs) {
+      const labels = await github.issues.getIssueLabels({
+        owner: ORG_NAME,
+        repo: FIRMWARE_REPO,
+        number: pr.number
+      });
+      pr.labels = labels.data.map(label => label.name);
+    }
+    // Arrange merged PRs by label name
     let prsByLabel = {};
     for (let label of LABELS) {
       prsByLabel[label.name] = [];
