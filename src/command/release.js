@@ -12,7 +12,7 @@ import path from 'path';
 const BOOTLOADER_GEN_SCRIPT = 'hal/src/stm32f2xx/image_bootloader.sh';
 const CHANGELOG_FILE = 'CHANGELOG.md';
 
-// Recognized issue labels
+// Issue labels
 const LABELS = [
   {
     name: 'feature', // Label name
@@ -244,9 +244,9 @@ export class ReleaseCommand extends Command {
     const curVer = await getFirmwareVersion(rootPath);
     this.log.info(`Current version: ${curVer}`);
     // Get previous version
-    const tagInfo = await git.tags();
+    const tags = await git.tags();
     const vers = [];
-    for (let tag of tagInfo.all) {
+    for (let tag of tags.all) {
       if (tag.startsWith('v')) {
         const ver = tag.substr(1);
         if (semver.valid(ver) && semver.compare(ver, curVer) < 0) {
@@ -261,52 +261,88 @@ export class ReleaseCommand extends Command {
     const prevVer = vers[vers.length - 1];
     this.log.info(`Previous version: ${prevVer}`);
     // Find a common ancestor
-    const curCommit = (await git.revparse(['HEAD'])).trim();
-    const prevCommit = (await git.revparse([`v${prevVer}`])).trim();
-    const baseCommit = (await git.raw(['merge-base', prevCommit, curCommit])).trim();
-    // Collect all merged PRs
-    this.log.info('Getting list of merged PRs');
-    const logInfo = await git.log({ from: baseCommit, to: curCommit, '--merges': true });
-    const prs = [];
-    const regexp = /^Merge pull request #(\d+) from (.*)$/;
-    for (let log of logInfo.all) {
-      const match = log.message.match(regexp);
-      if (!match) {
-        continue;
-      }
-      prs.push(match[1]);
+    const curCommit = (await git.revparse([ 'HEAD' ])).trim();
+    const prevCommit = (await git.revparse([ `v${prevVer}` ])).trim();
+    const baseCommit = (await git.raw([ 'merge-base', prevCommit, curCommit ])).trim();
+    const baseCommitLog = await git.log([ baseCommit, '-1' ]);
+    const baseCommitTime = Date.parse(baseCommitLog.latest.date);
+    if (Number.isNaN(baseCommitTime)) {
+      throw new Error(`Unable to parse date: '${baseCommitLog.latest.date}' (${baseCommit})`);
     }
-    // Ensure that the recognized labels are still registered
+    // Make a lookup table for the range of commits
+    const log = await git.log({ from: baseCommit, to: curCommit });
+    const commits = new Set(log.all.map(log => log.hash));
+    // Ensure that all known labels are registered
     await checkLabels();
-    // Get list of merged PRs and arrange them by labels
+    // Collect all merged PRs
+    this.log.info('Collecting merged PRs');
+    const mergedPrs = [];
+    let closedPrs = await github.pullRequests.getAll({
+      owner: ORG_NAME,
+      repo: FIRMWARE_REPO,
+      state: 'closed',
+      sort: 'updated',
+      direction: 'desc',
+      per_page: 50
+    });
+    for (;;) {
+      let stop = false;
+      for (const pr of closedPrs.data) {
+        const updatedTime = Date.parse(pr.updated_at);
+        if (Number.isNaN(updatedTime)) {
+          throw new Error(`Unable to parse date: '${pr.updated_at}' (#${pr.number})`);
+        }
+        if (updatedTime < baseCommitTime) {
+          stop = true;
+          break;
+        }
+        if (pr.merged_at && commits.has(pr.merge_commit_sha)) {
+          // Get labels assigned to the PR
+          const labels = await github.issues.getIssueLabels({
+            owner: ORG_NAME,
+            repo: FIRMWARE_REPO,
+            number: pr.number
+          });
+          mergedPrs.push({
+            url: pr.html_url,
+            number: pr.number,
+            title: pr.title,
+            labels: labels.data.map(label => label.name)
+          });
+        }
+      }
+      if (stop || !github.hasNextPage(closedPrs)) {
+        break;
+      }
+      closedPrs = await github.getNextPage(closedPrs);
+    }
+    // Arrange PRs by label name
     let prsByLabel = {};
     for (let label of LABELS) {
       prsByLabel[label.name] = [];
     }
+    let unknownPrs = [];
     let prCount = 0;
-    for (let prNum of prs) {
-      const pr = await github.issues.get({
-        owner: ORG_NAME,
-        repo: FIRMWARE_REPO,
-        number: prNum
-      });
+    for (let pr of mergedPrs) {
       let labelCount = 0;
-      if (pr.data.labels) {
-        for (let { name } of pr.data.labels) {
-          const prs = prsByLabel[name];
-          if (prs) {
-            prs.push(pr);
-            ++labelCount;
-            ++prCount;
-          }
+      for (let label of pr.labels) {
+        const prs = prsByLabel[label];
+        if (prs) {
+          prs.push(pr);
+          ++labelCount;
+          ++prCount;
         }
       }
       if (labelCount == 0) {
-        this.log.warn(`PR has no recognized labels assigned: ${pr.data.html_url}`);
+        unknownPrs.push(pr);
       }
     }
+    if (unknownPrs.length > 0) {
+      const urls = unknownPrs.map(pr => pr.url).join('\n');
+      this.log.warn(`The following PRs have no known labels assigned:\n${urls}`);
+    }
     if (prCount == 0) {
-      this.log.info('No PRs with recognized labels found');
+      this.log.info('No new entries have been added to the changelog');
       return;
     }
     // Generate changelog
@@ -319,7 +355,7 @@ export class ReleaseCommand extends Command {
       }
       data += `### ${label.section}\n\n`;
       for (let pr of prs) {
-        data += `- ${pr.data.title} [#${pr.data.number}](${pr.data.html_url})\n`;
+        data += `- ${pr.title} [#${pr.number}](${pr.url})\n`;
       }
       data += '\n';
     }
