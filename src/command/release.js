@@ -306,7 +306,7 @@ export class ReleaseCommand extends Command {
           number: pr.number,
           title: pr.title
         };
-        if (commits.has(pr.merge_commit_sha)) {
+        if (pr.milestone && pr.milestone.title == curVer || commits.has(pr.merge_commit_sha)) {
           mergedPrs.push(mergedPr);
         } else {
           let prs = indirectPrs[pr.base.label];
