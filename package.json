@@ -18,12 +18,12 @@
     "lodash": "^4.17.4",
     "semver": "^5.5.0",
     "shelljs": "^0.8.1",
-    "simple-git": "^1.89.0",
-    "tmp": "0.0.33",
-    "yargs": "^11.0.0"
+    "simple-git": "^3.28.0",
+    "tmp": "^0.2.5",
+    "yargs": "^18.0.0"
   },
   "devDependencies": {
     "babel-cli": "^6.26.0",
-    "babel-preset-env": "^1.6.1"
+    "babel-preset-env": "^0.0.0"
   }
 }
